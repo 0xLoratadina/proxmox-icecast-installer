@@ -1,96 +1,97 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# ═══════════════════════════════════════════
-#      Proxmox Helper Script - Icecast CT
-# ═══════════════════════════════════════════
+# Colores y estilos
+YELLOW='\033[1;33m'
+GREEN='\033[1;32m'
+NC='\033[0m' # No Color
 
+# Datos del contenedor
 CTID=1000
 HOSTNAME="icecastServer"
 MEMORY="4096"
-CPUS="2"
+CORES="2"
 DISK_SIZE="8G"
 STORAGE="local-lvm"
-TEMPLATE="debian-12-standard_12.0-1_amd64.tar.zst"
-BRIDGE="vmbr0"
-TAGS="radio,cloud,ip"
+TEMPLATE="debian-12-standard_12.2-1_amd64.tar.zst"
+TEMPLATE_PATH="/var/lib/vz/template/cache/$TEMPLATE"
 
-# Función para instalar Icecast
-install_icecast() {
-  echo "🔧 Iniciando instalación y configuración de CT..."
+# Función principal para crear el CT
+create_default_ct() {
+  echo -e "${YELLOW}🔧 Iniciando instalación y configuración de CT...${NC}"
 
-  # Descargar plantilla si no existe
-  if ! pveam list local | grep -q "$TEMPLATE"; then
-    echo "📥 Descargando plantilla Debian 12..."
-    pveam update && pveam download local $TEMPLATE
+  # Verificar si el template ya está descargado
+  if [[ ! -f "$TEMPLATE_PATH" ]]; then
+    echo -e "${YELLOW}📥 Descargando plantilla Debian 12...${NC}"
+    pveam update
+    pveam download "$STORAGE" "$TEMPLATE"
   fi
 
-  # Pedir contraseña para el CT
-  read -rsp "🔐 Contraseña root del contenedor: " CT_PASSWORD
-  echo
+  # Solicitar contraseña root para el contenedor
+  echo -e ""
+  read -s -p "🔐 Contraseña root del contenedor: " ROOT_PWD
+  echo ""
 
-  # Crear CT
-  pct create $CTID local:vztmpl/$TEMPLATE \
-    --hostname $HOSTNAME \
-    --cores $CPUS \
-    --memory $MEMORY \
-    --rootfs $STORAGE:$DISK_SIZE \
-    --net0 name=eth0,bridge=$BRIDGE,ip=dhcp \
-    --ostype debian \
-    --password $CT_PASSWORD \
+  # Crear el contenedor
+  echo -e "${YELLOW}🚧 Creando contenedor LXC...${NC}"
+  pct create "$CTID" "$TEMPLATE_PATH" \
+    --hostname "$HOSTNAME" \
+    --cores "$CORES" \
+    --memory "$MEMORY" \
+    --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+    --rootfs "$STORAGE:$DISK_SIZE" \
+    --password "$ROOT_PWD" \
     --unprivileged 1 \
     --features nesting=1 \
-    --tags "$TAGS"
+    --tags "radio,cloud,ip"
 
-  echo "⚡ Iniciando CT..."
-  pct start $CTID
-  sleep 5
+  # Iniciar contenedor
+  echo -e "${YELLOW}⚡ Iniciando CT...${NC}"
+  pct start "$CTID"
+  sleep 3
 
-  echo "📦 Instalando Icecast2..."
-  pct exec $CTID -- bash -c "apt update && apt install -y icecast2"
+  # Instalar Icecast
+  echo -e "${YELLOW}📦 Instalando Icecast2 dentro del contenedor...${NC}"
+  pct exec "$CTID" -- apt update
+  pct exec "$CTID" -- apt install -y icecast2
 
-  # Pedir contraseñas para Icecast
-  echo
-  read -rsp "🔑 Contraseña admin Icecast: " ADMIN_PASS
-  echo
-  read -rsp "🎙 Contraseña source Icecast: " SOURCE_PASS
-  echo
-  read -rsp "🔁 Contraseña relay Icecast: " RELAY_PASS
-  echo
+  # Solicitar contraseñas para Icecast
+  echo -e ""
+  read -p "🔑 Contraseña admin Icecast: " ADMIN_PWD
+  read -p "🎙 Contraseña source Icecast: " SOURCE_PWD
+  read -p "🔁 Contraseña relay Icecast: " RELAY_PWD
 
-  # Aplicar configuración en icecast.xml
-  pct exec $CTID -- bash -c "
-    cp /etc/icecast2/icecast.xml /etc/icecast2/icecast.xml.bak && \
-    sed -i \"s|<admin-password>.*</admin-password>|<admin-password>$ADMIN_PASS</admin-password>|\" /etc/icecast2/icecast.xml && \
-    sed -i \"s|<source-password>.*</source-password>|<source-password>$SOURCE_PASS</source-password>|\" /etc/icecast2/icecast.xml && \
-    sed -i \"s|<relay-password>.*</relay-password>|<relay-password>$RELAY_PASS</relay-password>|\" /etc/icecast2/icecast.xml && \
-    systemctl restart icecast2
-  "
+  CONFIG_PATH="/etc/icecast2/icecast.xml"
+  pct exec "$CTID" -- sed -i "s/<admin-password>.*<\/admin-password>/<admin-password>$ADMIN_PWD<\/admin-password>/g" "$CONFIG_PATH"
+  pct exec "$CTID" -- sed -i "s/<source-password>.*<\/source-password>/<source-password>$SOURCE_PWD<\/source-password>/g" "$CONFIG_PATH"
+  pct exec "$CTID" -- sed -i "s/<relay-password>.*<\/relay-password>/<relay-password>$RELAY_PWD<\/relay-password>/g" "$CONFIG_PATH"
+  pct exec "$CTID" -- systemctl restart icecast2
 
-  # Mostrar IP
-  CT_IP=$(pct exec $CTID -- hostname -I | awk '{print $1}')
-  echo -e "\n✅ Icecast instalado y disponible en: http://$CT_IP:8000"
+  IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
+  echo ""
+  echo -e "${GREEN}✅ Icecast instalado y disponible en: http://${IP}:8000 ${NC}"
 }
 
-# Menú estilo TUI
-while true; do
-  OPTION=$(whiptail --title "Proxmox Icecast Helper" --menu "Choose an option:" 15 60 4 \
-    "1" "Default Settings" \
-    "2" "Exit" 3>&1 1>&2 2>&3)
+# Menú interactivo tipo whiptail
+show_menu() {
+  while true; do
+    OPTION=$(whiptail --title "Icecast Installer for Proxmox" --menu "Selecciona una opción:" 15 50 4 \
+      "1" "Crear CT con configuración por defecto" \
+      "0" "Salir" 3>&1 1>&2 2>&3)
 
-  exitstatus=$?
-  if [ $exitstatus != 0 ]; then
-    echo -e "\n❌ Menú cancelado. Saliendo del script.\n"
-    exit 1
-  fi
+    case $OPTION in
+      1) create_default_ct ;;
+      0) clear; exit ;;
+      *) echo "Opción inválida" ;;
+    esac
+  done
+}
 
-  case $OPTION in
-    1)
-      install_icecast
-      exit 0
-      ;;
-    2)
-      echo -e "\n👋 Saliendo del script.\n"
-      exit 0
-      ;;
-  esac
-done
+# Verifica si se está ejecutando en Proxmox
+if ! command -v pveversion >/dev/null; then
+  echo -e "${RED}❌ Este script debe ejecutarse en un nodo Proxmox.${NC}"
+  exit 1
+fi
+
+# Iniciar menú
+show_menu
