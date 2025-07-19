@@ -19,8 +19,20 @@ ICECAST_ADMIN=""
 ICECAST_SOURCE=""
 ICECAST_RELAY=""
 
+# Función para leer contraseñas desde el usuario
+function leer_contraseñas() {
+  read -rsp $'🔐 Contraseña root del contenedor: \n' PASSWORD_ROOT
+  echo
+  read -rsp $'🔑 Contraseña admin Icecast: \n' ICECAST_ADMIN
+  echo
+  read -rsp $'🎙 Contraseña source Icecast: \n' ICECAST_SOURCE
+  echo
+  read -rsp $'🔁 Contraseña relay Icecast: \n' ICECAST_RELAY
+  echo
+}
+
 # Función para configurar DEBCONF de manera no interactiva
-configurar_debconf() {
+function configurar_debconf() {
   pct exec "$CTID" -- bash -c "cat > /tmp/icecast-debconf <<EOF
 icecast2 icecast2/hostname string $HOSTNAME
 icecast2 icecast2/syslog boolean false
@@ -43,8 +55,50 @@ EOF"
   pct exec "$CTID" -- bash -c "echo 'export DEBCONF_NONINTERACTIVE_SEEN=true' >> /etc/environment"
 }
 
+# Función para encontrar el próximo CTID disponible
+function encontrar_ctid_disponible() {
+  local id=$BASE_CTID
+  while pct list | awk '{print $1}' | grep -q "^${id}$"; do
+    ((id++))
+  done
+  echo "$id"
+}
+
+# Crear CT
+function crear_ct() {
+  CTID=$(encontrar_ctid_disponible)
+  
+  echo -e "${YELLOW}📥 Verificando plantilla Debian 12...${NC}"
+  pveam update
+  if ! pveam list local | grep -q "$TEMPLATE"; then
+    echo -e "${YELLOW}⬇️ Descargando plantilla $TEMPLATE...${NC}"
+    pveam download local "$TEMPLATE"
+  fi
+
+  echo -e "${YELLOW}📦 Creando contenedor LXC (ID: $CTID)...${NC}"
+  pct create "$CTID" "local:vztmpl/$TEMPLATE" \
+    --storage "$STORAGE" \
+    --hostname "$HOSTNAME" \
+    --memory "$MEMORY" \
+    --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+    --ostype debian \
+    --password "$PASSWORD_ROOT" \
+    --unprivileged 1 \
+    --tags "radio,cloud,ip" \
+    --features nesting=1
+
+  echo -e "${GREEN}⚡ Iniciando CT...${NC}"
+  pct start "$CTID"
+  
+  # Esperar a que el contenedor esté listo
+  echo -e "${YELLOW}⏳ Esperando a que el contenedor esté listo...${NC}"
+  while ! pct exec "$CTID" -- true 2>/dev/null; do
+    sleep 1
+  done
+}
+
 # Función para instalar Icecast sin diálogos
-instalar_icecast_sin_dialogos() {
+function instalar_icecast_sin_dialogos() {
   echo -e "${YELLOW}🔧 Configurando entorno no interactivo...${NC}"
   configurar_debconf
   
@@ -71,11 +125,32 @@ instalar_icecast_sin_dialogos() {
   pct exec "$CTID" -- systemctl enable --now icecast2
 }
 
-# [Resto de funciones permanecen igual...]
+# Función para mostrar banner informativo
+function mostrar_banner() {
+  local ip=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
+  cat <<EOF
+
+${CYAN}===================================================
+               SERVIDOR DE RADIO ICECAST
+===================================================
+${GREEN}Nombre del servidor:${NC} $HOSTNAME
+${GREEN}Dirección IP:${NC}       $ip
+${GREEN}Puerto:${NC}            8000
+${GREEN}URL de acceso:${NC}     http://$ip:8000
+${GREEN}Estado Icecast:${NC}    $(pct exec "$CTID" -- systemctl is-active icecast2)
+${CYAN}===================================================
+${NC}Para administrar Icecast: http://$ip:8000/admin
+Credenciales:
+  - Usuario admin: admin
+  - Contraseña: ${ICECAST_ADMIN}
+${CYAN}===================================================${NC}
+
+EOF
+}
 
 # Ejecutar flujo principal
 echo -e "${GREEN}🔧 Iniciando instalación y configuración de CT...${NC}"
 leer_contraseñas
 crear_ct
-instalar_icecast_sin_dialogos  # Usamos la nueva función de instalación
+instalar_icecast_sin_dialogos
 mostrar_banner
