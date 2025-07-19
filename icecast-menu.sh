@@ -5,15 +5,24 @@ set -euo pipefail
 RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m' NC='\033[0m'
 
 # Configuración
-CTID=1000
+BASE_CTID=1000
 HOSTNAME="radio-server"
 MEMORY=4096
-STORAGE="local-lvm"  # Cambiado a local-lvm según tu pvesm status
+STORAGE="local-lvm"  # Usando local-lvm según tu configuración
 TEMPLATE="debian-12-standard_12.7-1_amd64.tar.zst"
 PASSWORD_ROOT=""
 ICECAST_ADMIN=""
 ICECAST_SOURCE=""
 ICECAST_RELAY=""
+
+# Función para encontrar el próximo CTID disponible
+encontrar_ctid_disponible() {
+  local id=$BASE_CTID
+  while pct list | awk '{print $1}' | grep -q "^${id}$"; do
+    ((id++))
+  done
+  echo "$id"
+}
 
 # Función para leer contraseñas desde el usuario
 leer_contraseñas() {
@@ -29,6 +38,8 @@ leer_contraseñas() {
 
 # Crear CT
 crear_ct() {
+  CTID=$(encontrar_ctid_disponible)
+  
   echo -e "${YELLOW}📥 Verificando plantilla Debian 12...${NC}"
   pveam update
   if ! pveam list local | grep -q "$TEMPLATE"; then
@@ -36,7 +47,7 @@ crear_ct() {
     pveam download local "$TEMPLATE"
   fi
 
-  echo -e "${YELLOW}📦 Creando contenedor LXC...${NC}"
+  echo -e "${YELLOW}📦 Creando contenedor LXC (ID: $CTID)...${NC}"
   pct create "$CTID" "local:vztmpl/$TEMPLATE" \
     --storage "$STORAGE" \
     --hostname "$HOSTNAME" \
