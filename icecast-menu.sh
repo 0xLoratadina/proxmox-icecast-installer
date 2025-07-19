@@ -8,7 +8,7 @@ RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m' NC='\033[0m'
 CTID=1000
 HOSTNAME="radio-server"
 MEMORY=4096
-STORAGE="local"  # cambia a local-lvm si usas ese
+STORAGE="local-lvm"  # Cambiado a local-lvm según tu pvesm status
 TEMPLATE="debian-12-standard_12.7-1_amd64.tar.zst"
 PASSWORD_ROOT=""
 ICECAST_ADMIN=""
@@ -31,21 +31,22 @@ leer_contraseñas() {
 crear_ct() {
   echo -e "${YELLOW}📥 Verificando plantilla Debian 12...${NC}"
   pveam update
-  if [ ! -f "/var/lib/vz/template/cache/$TEMPLATE" ]; then
+  if ! pveam list local | grep -q "$TEMPLATE"; then
     echo -e "${YELLOW}⬇️ Descargando plantilla $TEMPLATE...${NC}"
-    pveam download "$STORAGE" "debian-12-standard"
+    pveam download local "$TEMPLATE"
   fi
 
   echo -e "${YELLOW}📦 Creando contenedor LXC...${NC}"
   pct create "$CTID" "local:vztmpl/$TEMPLATE" \
-    -hostname "$HOSTNAME" \
-    -memory "$MEMORY" \
-    -net0 name=eth0,bridge=vmbr0,ip=dhcp \
-    -ostype debian \
-    -password "$PASSWORD_ROOT" \
-    -unprivileged 1 \
-    -tags "radio,cloud,ip" \
-    -features nesting=1
+    --storage "$STORAGE" \
+    --hostname "$HOSTNAME" \
+    --memory "$MEMORY" \
+    --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+    --ostype debian \
+    --password "$PASSWORD_ROOT" \
+    --unprivileged 1 \
+    --tags "radio,cloud,ip" \
+    --features nesting=1
 
   echo -e "${GREEN}⚡ Iniciando CT...${NC}"
   pct start "$CTID"
